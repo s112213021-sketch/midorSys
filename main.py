@@ -149,24 +149,70 @@ async def register_form(request: Request):
 
 # 【修改 /register】加入註冊通知
 @app.post("/register")
-async def register_post(request: Request, student_id: str = Form(...), name: str = Form(...), db: Session = Depends(get_db)):
-    student_id = student_id.strip(); name = name.strip()
-    existing = db.query(User).filter(User.student_id == student_id).first()
-    if existing:
-        if existing.rfid_uid:
-             return JSONResponse(status_code=400, content={"message": "此學號已綁定"})
-        else:
-             existing.name = name
-             db.commit()
-    else:
-        try:
-            db.add(User(student_id=student_id, name=name))
-            db.commit()
-        except IntegrityError:
-            db.rollback(); raise HTTPException(status_code=400, detail="註冊失敗")
+async def register_post(
+    request: Request,
+    student_id: str = Form(...),
+    name: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    student_id = student_id.strip()
+    name = name.strip()
 
-    send_tg_message(f"📝 <b>新用戶註冊申請</b>\n姓名：{name}\n學號：{student_id}\n狀態：等待刷卡驗證 (60s)...")
-    return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
+    # 1. 先檢查資料庫狀態
+    existing_user = db.query(User).filter(User.student_id == student_id).first()
+
+    try:
+        # --- 資料庫操作區 ---
+        if existing_user:
+            # 情況 A: 用戶存在
+            if existing_user.rfid_uid:
+                # 已經綁定過卡片 -> 禁止重複註冊
+                return JSONResponse(status_code=400, content={"message": "❌ 此學號已綁定卡片，請直接刷卡進門。"})
+            else:
+                # 有學號但沒卡片 (上次註冊一半) -> 更新名字，準備繼續綁定
+                existing_user.name = name
+                db.commit()
+        else:
+            # 情況 B: 完全的新用戶 -> 建立資料
+            new_user = User(student_id=student_id, name=name)
+            db.add(new_user)
+            db.commit()
+        
+        # --- 樹莓派連動區 (成功寫入 DB 後才執行) ---
+        # 不管是情況 A 或 B，只要沒報錯，都要叫樹莓派準備掃描
+        if PI_API_URL:
+            try:
+                # 呼叫樹莓派的 Cloudflare 網址
+                # 注意：這裡 timeout 設短一點，不要讓網頁等太久
+                requests.post(
+                    f"{PI_API_URL}/mode/register",
+                    json={"student_id": student_id},
+                    timeout=3 
+                )
+                print(f"✅ 已通知 Pi 切換模式: {student_id}")
+            except Exception as e:
+                print(f"⚠️ 無法連線到 Pi (可能網路不穩): {e}")
+                # Pi 連線失敗不影響註冊流程，讓前端繼續跑倒數
+        
+        # --- Telegram 通知區 ---
+        msg = (
+            f"📝 <b>新用戶註冊申請</b>\n"
+            f"------------------\n"
+            f"姓名：{name}\n"
+            f"學號：{student_id}\n"
+            f"狀態：等待刷卡驗證 (60s)..."
+        )
+        send_tg_message(msg)
+
+        # --- 回傳給前端 ---
+        return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
+
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="註冊失敗 (資料庫錯誤)")
+    except Exception as e:
+        print(f"系統錯誤: {e}")
+        raise HTTPException(status_code=500, detail="伺服器內部錯誤")
 
 @app.post("/cancel_register")
 async def cancel_register(student_id: str = Form(...), db: Session = Depends(get_db)):
