@@ -32,6 +32,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # --- Model 定義 ---
+# --- Model 定義 ---
 class User(Base):
     __tablename__ = "users"
     student_id = Column(String(20), primary_key=True, index=True)
@@ -146,6 +147,7 @@ templates = Jinja2Templates(directory="templates")
 async def register_form(request: Request):
     return templates.TemplateResponse("register.html", {"request": request, "pi_api_url": PI_API_URL})
 
+# 【修改 /register】加入註冊通知
 @app.post("/register")
 async def register_post(request: Request, student_id: str = Form(...), name: str = Form(...), db: Session = Depends(get_db)):
     student_id = student_id.strip(); name = name.strip()
