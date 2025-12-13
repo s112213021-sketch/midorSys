@@ -220,62 +220,79 @@ async def success_page(request: Request, student_id: str, db: Session = Depends(
 @app.post("/rfid_scan")
 async def rfid_scan(
     rfid_uid: str = Form(...),
-    student_id: str = Form(None), 
-    action: str = Form(default="ENTRY"), 
+    student_id: str = Form(None),  # 註冊模式時會傳入正在綁定的 student_id
+    action: str = Form(default="ENTRY"),
     db: Session = Depends(get_db),
 ):
-    # 1. 一般進門 (ENTRY)
-    if action == "ENTRY":
+    rfid_uid = rfid_uid.strip()
+
+    # ==================== 1. 一般進門模式 (ENTRY) ====================
+    if action == "ENTRY" and not student_id:
         user = db.query(User).filter(User.rfid_uid == rfid_uid).first()
         if user:
-            # 這裡寫入大寫 ENTRY，因為我們剛剛 reset_db 解除了限制
             log = AccessLog(student_id=user.student_id, rfid_uid=rfid_uid, action="ENTRY")
-            db.add(log); db.commit()
-            
-            # 傳圖片
+            db.add(log)
+            db.commit()
+
             photo_path = "static/welcome.jpeg"
             caption = f"👋 <b>歡迎！{user.name} 已進入 MOLI</b>"
             send_tg_photo(photo_path, caption)
-            
-            check_crowd_alert(db) 
+
+            # 檢查是否需要換氣提醒
+            check_crowd_alert(db)
+
             return {"status": "logged", "message": "Entry logged"}
         else:
+            # 正常使用但卡片未綁定 → 視為陌生卡
+            send_tg_message(f"⚠️ <b>警告：陌生卡片刷卡</b>\n卡號：{rfid_uid}")
             return {"status": "error", "message": "User not found"}
 
-    # 2. 陌生人 (ERROR)
+    # ==================== 2. 陌生卡警告 (ERROR) ====================
     if action == "ERROR":
         send_tg_message(f"⚠️ <b>警告：陌生卡片刷卡</b>\n卡號：{rfid_uid}")
         return {"status": "alerted", "message": "Stranger alert sent"}
 
-    # 3. 註冊綁定 (Register Mode)
+    # ==================== 3. 註冊綁定模式 (有傳 student_id) ====================
     if student_id:
-        pending_user = db.query(User).filter(User.student_id == student_id).first()
-        if not pending_user: return JSONResponse(status_code=400, content={"message": "用戶不存在"})
-        if db.query(User).filter(User.rfid_uid == rfid_uid).first():
-             return JSONResponse(status_code=400, content={"message": "❌ 此卡片已被使用"})
+        student_id = student_id.strip()
+        pending_user = db.query(User).filter(User.student_id == student_id, User.rfid_uid.is_(None)).first()
+        
+        if not pending_user:
+            return JSONResponse(status_code=400, content={"message": "無效的註冊請求或用戶已綁定"})
 
+        # 檢查此卡是否已被其他人綁定
+        if db.query(User).filter(User.rfid_uid == rfid_uid, User.student_id != student_id).first():
+            # 已綁定給別人 → 直接拒絕，不進入暫存
+            if student_id in temp_scans:
+                del temp_scans[student_id]
+            return JSONResponse(status_code=400, content={"message": "❌ 此卡片已被其他帳號綁定"})
+
+        # —— 雙重刷卡邏輯 ——
         if student_id in temp_scans:
-            # 第二刷
+            # 這是第二次刷卡
             if temp_scans[student_id] == rfid_uid:
+                # 一致 → 綁定成功
                 pending_user.rfid_uid = rfid_uid
-                db.commit()
-                # 寫入 BIND
                 db.add(AccessLog(student_id=student_id, rfid_uid=rfid_uid, action="BIND"))
                 db.commit()
+                
                 del temp_scans[student_id]
-                send_tg_message(f"✅ <b>綁定成功！</b>\n用戶：{pending_user.name}")
-                return JSONResponse({"status": "bound", "message": "綁定成功"})
+                
+                send_tg_message(f"✅ <b>卡片綁定成功！</b>\n用戶：{pending_user.name} ({pending_user.student_id})")
+                return {"status": "bound", "message": "綁定成功"}
             else:
+                # 不一致 → 清除暫存，強制重新開始
                 del temp_scans[student_id]
-                return JSONResponse(status_code=400, content={"message": "❌ 卡片不一致"})
+                return JSONResponse(status_code=400, content={"message": "❌ 兩次刷卡不一致，請重新刷卡"})
         else:
-            # 第一刷
+            # 這是第一次刷卡 → 暫存
             temp_scans[student_id] = rfid_uid
-            # 寫入 SCAN_1
             db.add(AccessLog(student_id=student_id, rfid_uid=rfid_uid, action="SCAN_1"))
             db.commit()
-            return JSONResponse({"status": "step_1", "message": "請再次刷卡"})
+            
+            return {"status": "step_1", "message": "第一次刷卡成功，請再次刷卡確認"}
 
+    # ==================== 其他無效請求 ====================
     return JSONResponse(status_code=400, content={"message": "Invalid request"})
 
 if __name__ == "__main__":
