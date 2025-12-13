@@ -73,6 +73,26 @@ def send_tg_message(text):
     except Exception as e:
         print(f"TG 發送失敗: {e}")
 
+# --- TG 發送圖片小幫手 ---
+def send_tg_photo(photo_path, caption):
+    if not TG_TOKEN or not TG_CHAT_ID: return
+    
+    # 檢查圖片是否存在，不在就只傳文字
+    if not os.path.exists(photo_path):
+        print(f"❌ 找不到圖片: {photo_path}")
+        send_tg_message(caption)
+        return
+
+    try:
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
+        with open(photo_path, 'rb') as f:
+            files = {'photo': f}
+            # parse_mode='HTML' 讓文字支援粗體
+            data = {'chat_id': TG_CHAT_ID, 'caption': caption, 'parse_mode': 'HTML'}
+            requests.post(url, data=data, files=files, timeout=10)
+    except Exception as e:
+        print(f"TG 發送圖片失敗: {e}")
+
 # ================= 📊 統計與報告邏輯 (保持原樣) =================
 
 def check_crowd_alert(db: Session):
@@ -262,8 +282,13 @@ async def rfid_scan(
             log = AccessLog(student_id=user.student_id, rfid_uid=rfid_uid, action="ENTRY")
             db.add(log); db.commit()
             
-            send_tg_message(f"👋 <b>你好！{user.name} 已進入 MOLI</b>")
-            check_crowd_alert(db) # 觸發人流統計
+            # 【修改點】改為發送圖片 + 歡迎詞 (拿掉卡號)
+            photo_path = "static/welcome.jpeg"
+            caption = f"👋 <b>歡迎！{user.name} 已進入 MOLI</b>" # 這裡不含 rfid_uid
+            
+            send_tg_photo(photo_path, caption)
+            
+            check_crowd_alert(db) 
             return {"status": "logged", "message": "Entry logged"}
         else:
             return {"status": "error", "message": "User not found in cloud DB"}
