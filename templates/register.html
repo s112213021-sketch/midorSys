@@ -73,16 +73,14 @@
       formData.append("name", name);
 
       try {
-        // 1. 呼叫 Web Backend 建立資料
         const resp = await fetch("/register", { method: "POST", body: formData });
 
         if (resp.ok) {
-          // 2. 呼叫 Pi 進入註冊模式
           try {
             if (PI_API_URL && PI_API_URL !== "None") {
               await fetch(`${PI_API_URL}/mode/register`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", "X-API-KEY": "{{ api_key }}" },  // 新增：傳 API key (假設 Jinja 傳入)
                 body: JSON.stringify({ student_id: student_id })
               });
             } else {
@@ -90,10 +88,8 @@
             }
           } catch (piErr) {
             console.error("讀卡機連線失敗", piErr);
-            // 不阻擋流程，讓使用者還是可以看到等待畫面 (方便除錯)
           }
 
-          // 3. 顯示倒數視窗並開始輪詢
           document.getElementById("loadingModal").style.display = "block";
           startPolling(student_id);
 
@@ -114,44 +110,36 @@
       const modalTitle = document.getElementById("modalTitle");
 
       let attempts = 0;
-      const maxAttempts = 30; // 60秒
+      const maxAttempts = 30;
 
       const intervalId = setInterval(async () => {
         attempts++;
         try {
           const res = await fetch(`/check_status/${student_id}`);
+          if (!res.ok) throw new Error("Status check failed");  // 新增：檢查 res.ok
           const data = await res.json();
 
-          // --- 關鍵邏輯：偵測到綁定成功 ---
           if (data.bound) {
-            clearInterval(intervalId); // 停止輪詢
-
-            // 1. 改變 UI 狀態
-            spinner.style.display = "none";     // 隱藏轉圈圈
-            successIcon.style.display = "block";// 顯示打勾
+            clearInterval(intervalId);
+            spinner.style.display = "none";
+            successIcon.style.display = "block";
             successIcon.style.fontSize = "40px";
             successIcon.style.margin = "10px auto";
 
             modalTitle.textContent = "綁定完成！";
-            modalTitle.style.color = "#22c55e"; // 綠色
+            modalTitle.style.color = "#22c55e";
 
-            // 2. 顯示您要求的歡迎訊息
             scanStatus.textContent = "歡迎進入 MOLI 實驗室";
             scanStatus.style.fontWeight = "bold";
             scanStatus.style.color = "#22c55e";
 
-            // 3. 延遲 1.5 秒後跳轉，讓使用者看清楚訊息
             setTimeout(() => {
               window.location.href = `/success?student_id=${encodeURIComponent(student_id)}`;
             }, 1500);
-          }
-          // --- 【新增】邏輯 B: 偵測到第一次刷卡 ---
-          else if (data.status === "step_1") {
-            // 改變文字提示
+          } else if (data.status === "step_1") {
             scanStatus.textContent = "✅ 讀取成功！請「再次刷卡」確認...";
-            scanStatus.style.color = "#2563eb"; // 變成藍色提示
+            scanStatus.style.color = "#2563eb";
             scanStatus.style.fontWeight = "bold";
-            // 轉圈圈繼續轉，等待第二刷
           }
 
           if (attempts >= maxAttempts) {
@@ -160,7 +148,13 @@
             scanStatus.textContent = "❌ 刷卡逾時，請重新整理頁面再試。";
             scanStatus.style.color = "red";
           }
-        } catch (e) { console.error(e); }
+        } catch (e) { 
+          console.error(e);
+          clearInterval(intervalId);  // 新增：錯誤停止輪詢
+          spinner.style.display = "none";
+          scanStatus.textContent = "❌ 連線錯誤，請重新整理頁面再試。";
+          scanStatus.style.color = "red";
+        }
       }, 2000);
     }
   </script>
