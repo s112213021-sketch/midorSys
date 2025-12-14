@@ -73,16 +73,13 @@ def send_tg_message(text):
 
 # --- 統計與提醒邏輯 ---
 def check_crowd_alert(db: Session):
-    # 台灣時間 UTC+8
     one_hour_ago = datetime.utcnow() + timedelta(hours=8) - timedelta(hours=1)
     count = db.query(AccessLog).filter(AccessLog.timestamp >= one_hour_ago, AccessLog.action == "ENTRY").count()
     if count >= CROWD_THRESHOLD:
         send_tg_message(f"💨 <b>空氣品質提醒</b>\n一小時內已有 {count} 人次進入，請記得開窗！")
 
 async def scheduled_daily_report():
-    """每日報告 (可根據需求擴充)"""
     print("📊 執行每日報告統計...")
-    # 這裡可以加入發送每日進出統計到 TG 的邏輯
     pass
 
 # --- App 初始化與排程 ---
@@ -133,31 +130,37 @@ async def register_post(
             if existing.rfid_uid:
                 return JSONResponse(status_code=400, content={"detail": "❌ 此學號已綁定，請直接刷卡。"})
             else:
-                # 若有資料但沒卡號 (可能是上次失敗)，更新姓名重新開始
                 existing.name = name
         else:
-            # 建立新用戶 (尚未有卡號)
             new_user = User(student_id=student_id, name=name)
             db.add(new_user)
         
         db.commit()
         
-        # 通知 Pi 切換到註冊模式
+        # 通知 Pi 切換到註冊模式 (關鍵除錯點)
         if PI_API_URL:
+            pi_target = f"{PI_API_URL}/mode/register"
+            print(f"📡 正在嘗試連線到 Pi: {pi_target}") # Log 1
             try:
-                requests.post(
-                    f"{PI_API_URL}/mode/register", 
+                resp = requests.post(
+                    pi_target, 
                     json={"student_id": student_id}, 
                     headers={"X-API-KEY": API_KEY}, 
-                    timeout=3
+                    timeout=5 # 增加 timeout 避免網路波動
                 )
+                if resp.status_code == 200:
+                    print("✅ Pi 已成功切換至註冊模式")
+                else:
+                    print(f"⚠️ Pi 回傳錯誤代碼: {resp.status_code}, 內容: {resp.text}")
             except Exception as e:
-                print(f"⚠️ 無法連線到 Pi: {e}")
+                print(f"❌ 無法連線到 Pi (請檢查 PI_API_URL 與 Tunnel): {e}")
+        else:
+            print("⚠️ 未設定 PI_API_URL，略過 Pi 通知")
         
         return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
     except Exception as e:
         db.rollback()
-        print(f"Error: {e}")
+        print(f"System Error: {e}")
         raise HTTPException(status_code=500, detail="系統錯誤")
 
 @app.post("/cancel_register")
@@ -165,10 +168,9 @@ async def cancel_register(student_id: str = Form(...), db: Session = Depends(get
     """【功能】逾時自動刪除無效資料"""
     user = db.query(User).filter(User.student_id == student_id).first()
     
-    # 只刪除「還沒綁定 UID」的 user，避免誤刪已成功的用戶
+    # 符合流程：只刪除「還沒綁定 UID」的 user
     if user and not user.rfid_uid:
         db.delete(user)
-        # 順便清除過程中的暫存 log
         db.query(AccessLog).filter(AccessLog.student_id == student_id, AccessLog.action == "SCAN_1").delete()
         db.commit()
         print(f"♻️ [逾時清理] 已刪除未完成註冊資料：{student_id}")
@@ -182,15 +184,13 @@ async def check_status(student_id: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.student_id == student_id).first()
     
     if not user:
-        # 如果用戶被刪除了 (例如逾時)，回傳錯誤讓前端處理
-        return JSONResponse(status_code=404, content={"status": "error", "message": "User not found"})
+        return JSONResponse(status_code=404, content={"status": "error", "message": "User deleted (timeout)"})
 
     # 1. 綁定完成
     if user.rfid_uid: 
         return {"status": "bound", "rfid_uid": user.rfid_uid}
     
     # 2. 檢查是否有第一次刷卡紀錄 (SCAN_1)
-    # 找最近 60 秒內的紀錄
     recent_scan = db.query(AccessLog).filter(
         AccessLog.student_id == student_id, 
         AccessLog.action == "SCAN_1",
@@ -227,7 +227,7 @@ async def rfid_scan(
         if card_owner:
              return JSONResponse(status_code=400, content={"status": "error", "message": f"卡片已被 {card_owner.name} 使用"})
 
-        # 檢查是否為第 2 次刷卡 (找最近 60 秒的 SCAN_1)
+        # 檢查是否為第 2 次刷卡
         last_scan = db.query(AccessLog).filter(
             AccessLog.student_id == student_id,
             AccessLog.action == "SCAN_1",
@@ -239,16 +239,12 @@ async def rfid_scan(
             log = AccessLog(student_id=student_id, rfid_uid=rfid_uid, action="SCAN_1")
             db.add(log); db.commit()
             return JSONResponse({"status": "step_1", "message": "讀取成功！請「再次刷卡」確認..."})
-        
         else:
             # --- 步驟 2：第二次刷卡比對 ---
             if last_scan.rfid_uid == rfid_uid:
-                # 更新用戶卡號
                 pending_user.rfid_uid = rfid_uid
-                # 記錄綁定 Log
                 log_bind = AccessLog(student_id=student_id, rfid_uid=rfid_uid, action="BIND")
                 db.add(log_bind); db.commit()
-                
                 send_tg_message(f"✅ <b>新成員註冊成功</b>\n姓名：{pending_user.name}\n學號：{student_id}")
                 return JSONResponse({"status": "bound", "message": "綁定成功"})
             else:
@@ -260,7 +256,6 @@ async def rfid_scan(
         if user:
             log = AccessLog(student_id=user.student_id, rfid_uid=rfid_uid, action="ENTRY")
             db.add(log); db.commit()
-            
             check_crowd_alert(db)
             return {"status": "logged", "message": f"Welcome {user.name}"}
         else:
