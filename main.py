@@ -10,10 +10,12 @@ import os
 from dotenv import load_dotenv # 記得安裝 python-dotenv
 import requests
 from datetime import datetime, timedelta
-PI_API_URL = os.getenv("PI_API_URL")
 
 # 載入 .env 檔案
 load_dotenv()
+
+# 讀取 PI API URL（若使用 cloudflared 暴露的 Pi）
+PI_API_URL = os.getenv("PI_API_URL")
 
 # 修改這裡：優先讀取環境變數，沒有才用預設值 (但強烈建議不要在 code 留真實密碼)
 DATABASE_URL = os.getenv("DATABASE_URL")
