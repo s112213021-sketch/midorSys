@@ -16,6 +16,9 @@ load_dotenv()
 
 # 讀取 PI API URL（若使用 cloudflared 暴露的 Pi）
 PI_API_URL = os.getenv("PI_API_URL")
+PI_API_KEY = os.getenv("PI_API_KEY")
+
+print(f"[startup] PI_API_URL={PI_API_URL}")
 
 # 修改這裡：優先讀取環境變數，沒有才用預設值 (但強烈建議不要在 code 留真實密碼)
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -206,7 +209,7 @@ async def api_register_scan(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/", response_class=HTMLResponse)
 async def register_form(request: Request):
-    return templates.TemplateResponse("register.html", {"request": request, "error": None})
+    return templates.TemplateResponse("register.html", {"request": request, "error": None, "pi_api_url": PI_API_URL or '', "api_key": PI_API_KEY or ''})
 
 @app.post("/register")
 async def register_post(
@@ -239,9 +242,11 @@ async def register_post(
              # 通知 Pi 進入註冊模式（若 PI_API_URL 已設定）
              if PI_API_URL:
                  try:
-                     requests.post(f"{PI_API_URL.rstrip('/')}/mode/register", json={"student_id": student_id}, timeout=5)
+                    resp = requests.post(f"{PI_API_URL.rstrip('/')}/mode/register", json={"student_id": student_id}, timeout=5)
+                    print(f"[notify_pi] POST {PI_API_URL.rstrip('/')}/mode/register -> {resp.status_code} {resp.text}")
+                    # 如果需要，可在此檢查 resp.status_code != 200
                  except Exception as e:
-                     print(f"Notify Pi register start failed: {e}")
+                    print(f"Notify Pi register start failed: {e}")
              return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
 
     try:
@@ -256,7 +261,8 @@ async def register_post(
         # 通知 Pi 進入註冊模式（若 PI_API_URL 已設定）
         if PI_API_URL:
             try:
-                requests.post(f"{PI_API_URL.rstrip('/')}/mode/register", json={"student_id": student_id}, timeout=5)
+                resp = requests.post(f"{PI_API_URL.rstrip('/')}/mode/register", json={"student_id": student_id}, timeout=5)
+                print(f"[notify_pi] POST {PI_API_URL.rstrip('/')}/mode/register -> {resp.status_code} {resp.text}")
             except Exception as e:
                 print(f"Notify Pi register start failed: {e}")
         return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
