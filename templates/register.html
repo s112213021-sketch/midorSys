@@ -78,16 +78,23 @@
         if (resp.ok) {
           try {
             if (PI_API_URL && PI_API_URL !== "None") {
-              await fetch(`${PI_API_URL}/mode/register`, {
+              const piResp = await fetch(`${PI_API_URL}/mode/register`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json", "X-API-KEY": "{{ api_key }}" },  // 新增：傳 API key (假設 Jinja 傳入)
+                headers: { "Content-Type": "application/json", "X-API-KEY": "{{ api_key }}" },
                 body: JSON.stringify({ student_id: student_id })
               });
+              if (!piResp.ok) {
+                console.error(`Pi 模式切換失敗: ${piResp.status} ${await piResp.text()}`);
+                // 可選：顯示給使用者 errorMsg.textContent = "無法連線到讀卡機，請稍後再試";
+              } else {
+                console.log("Pi 模式切換成功");
+              }
             } else {
               console.warn("未設定 PI_API_URL，僅進行網頁模擬");
             }
           } catch (piErr) {
             console.error("讀卡機連線失敗", piErr);
+            // 可選：errorMsg.textContent = "讀卡機連線錯誤，請檢查網路";
           }
 
           document.getElementById("loadingModal").style.display = "block";
@@ -149,7 +156,7 @@
               window.location.href = `/success?student_id=${encodeURIComponent(student_id)}`;
             }, 1500);
           } else if (data.status === "step_1") {
-            scanStatus.textContent = "✅ 讀取成功！請「再次刷卡」確認...";
+            scanStatus.textContent = "✅ 讀取成功！請使用此進行“第二次刷卡”確認...";
             scanStatus.style.color = "#2563eb";
             scanStatus.style.fontWeight = "bold";
           }
