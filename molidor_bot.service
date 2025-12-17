@@ -1,0 +1,20 @@
+[Unit]
+Description=MOLi Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+# 設定為你的虛擬環境 python 路徑
+ExecStart=/Users/a-----/Desktop/dor_v3/.venv/bin/python /Users/a-----/Desktop/dor_v3/midorSys-main/tg_bot_runner.py
+WorkingDirectory=/Users/a-----/Desktop/dor_v3/midorSys-main
+Restart=on-failure
+User=pi
+EnvironmentFile=/etc/default/molidor_bot
+
+[Install]
+WantedBy=multi-user.target
+
+# 使用說明：
+# 1) 在 /etc/default/molidor_bot 放入一行：BOT_TOKEN="<your-bot-token>"
+# 2) systemctl daemon-reload
+# 3) systemctl enable --now molidor_bot.service

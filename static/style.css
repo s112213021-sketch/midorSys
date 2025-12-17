@@ -1,0 +1,271 @@
+:root {
+  --moli-primary: #2563eb;
+  /* MOLI 風格藍 */
+  --moli-dark: #111827;
+  --moli-light: #f5f7fb;
+  --border-radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Noto Sans TC", sans-serif;
+  background: linear-gradient(135deg, #f0f4ff, #f9fffb);
+  color: var(--moli-dark);
+}
+
+/* Layout */
+
+.page-wrap {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.moli-header {
+  padding: 16px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.85);
+  color: #f9fafb;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.brand-mark {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--moli-primary);
+}
+
+.lab-tag {
+  font-size: 12px;
+  color: #e5e7eb;
+}
+
+.main-center {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 32px 16px 40px;
+}
+
+.card {
+  width: 100%;
+  max-width: 420px;
+  background: #ffffff;
+  border-radius: var(--border-radius);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+  padding: 28px 24px 24px;
+}
+
+.card-center {
+  text-align: center;
+}
+
+/* 標題與文字 */
+
+.card-title {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.card-subtitle {
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 20px;
+}
+
+label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+/* 表單 */
+
+input[type="text"] {
+  width: 100%;
+  padding: 10px 11px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  font-size: 14px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="text"]:focus {
+  outline: none;
+  border-color: var(--moli-primary);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.25);
+}
+
+button[type="submit"] {
+  margin-top: 20px;
+  width: 100%;
+  border: none;
+  border-radius: 999px;
+  padding: 11px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: var(--moli-primary);
+  color: #ffffff;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.05s ease,
+    box-shadow 0.15s ease;
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.33);
+}
+
+button[type="submit"]:hover {
+  background: #1d4ed8;
+}
+
+button[type="submit"]:active {
+  transform: translateY(1px);
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.25);
+}
+
+.error {
+  color: #dc2626;
+  font-size: 13px;
+  margin-top: 10px;
+  min-height: 18px;
+}
+
+.hint {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-top: 10px;
+}
+
+/* 成功頁文字 */
+
+.success-title {
+  margin-top: 4px;
+  margin-bottom: 8px;
+  font-size: 22px;
+  color: var(--moli-primary);
+}
+
+.success-text {
+  margin: 4px 0 10px;
+  font-size: 14px;
+}
+
+.meta {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f3f4f6;
+  font-size: 13px;
+  text-align: left;
+}
+
+.back-link {
+  display: inline-block;
+  margin-top: 18px;
+  font-size: 13px;
+  text-decoration: none;
+  color: var(--moli-primary);
+  font-weight: 500;
+}
+
+/* Footer */
+
+.moli-footer {
+  text-align: center;
+  font-size: 11px;
+  color: #9ca3af;
+  padding-bottom: 16px;
+}
+
+/* Loading Modal */
+
+.loading-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background-color: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(4px);
+}
+
+.loading-card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  max-width: 360px;
+  background: #ffffff;
+  border-radius: var(--border-radius);
+  padding: 22px 20px 18px;
+  text-align: center;
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.4);
+}
+
+.modal-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.modal-text {
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 10px;
+}
+
+/* 漸變圓環動畫 */
+
+.spinner {
+  margin: 10px auto 12px;
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  background: conic-gradient(from 0deg,
+      #2563eb,
+      #4f46e5,
+      #0ea5e9,
+      #22c55e,
+      #2563eb);
+  mask: radial-gradient(farthest-side, transparent 55%, #000 56%);
+  -webkit-mask: radial-gradient(farthest-side, transparent 55%, #000 56%);
+  animation: spin 0.8s linear infinite, hue 4s linear infinite;
+}
+
+.scan-status {
+  font-size: 13px;
+  color: var(--moli-dark);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes hue {
+  0% {
+    filter: hue-rotate(0deg);
+  }
+
+  100% {
+    filter: hue-rotate(360deg);
+  }
+}
