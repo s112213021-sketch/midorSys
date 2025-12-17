@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MOLI 信箱驗證</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header class="moli-header">
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <span>MOLI 門禁系統</span>
+  </div>
+  <div class="lab-tag">Makers' Open Lab for Innovation</div>
+</header>
+
+<main class="main-center">
+  <div class="card card-center">
+    <h2 class="success-title">信箱驗證</h2>
+    <p class="success-text">
+      我們收到來自下列帳號的驗證請求，請確認是否為你本人操作。
+    </p>
+
+    <div class="meta">
+      <p><strong>學號：</strong>{{ user.student_id }}</p>
+      <p><strong>姓名：</strong>{{ user.name }}</p>
+      <p><strong>Email：</strong>{{ user.email }}</p>
+    </div>
+
+    <form method="post" action="/verify-email/confirm">
+      <!-- 後端可用 hidden input 帶 token 或 student_id -->
+      <input type="hidden" name="token" value="{{ token }}">
+      <button type="submit">確認是本人</button>
+    </form>
+
+    <p class="hint" style="margin-top:16px;">
+      若這不是你本人的操作，請不要按下確認，並聯絡實驗室管理人員。
+    </p>
+
+    <hr style="margin: 20px 0; border: none; border-top: 1px solid #e5e7eb;" />
+
+    <section class="terms">
+      <h3 style="font-size: 14px; margin-bottom: 6px;">使用者條款與隱私說明</h3>
+      <p class="hint" style="text-align:left;">
+        1. 本系統僅用於 MOLI 創新自造者開放實驗室之門禁與出入紀錄管理。<br>
+        2. 系統會記錄你的學號、姓名、Email 與刷卡時間，用於身份確認與安全追蹤。<br>
+        3. 所有資料僅限授權管理人員於實驗室管理目的下查閱，不會提供給第三方。<br>
+        4. 若你不同意上述條款，請勿繼續使用本系統，並聯絡實驗室管理人員協助處理。
+      </p>
+    </section>
+  </div>
+</main>
+
+<footer class="moli-footer">
+  © MOLI – Makers' Open Lab for Innovation
+</footer>
+</body>
+</html>
