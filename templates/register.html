@@ -52,6 +52,7 @@
       <div class="scan-status" id="scanStatus">
         請在 60 秒內至讀卡機刷卡...
       </div>
+      <div id="successMsg" style="display:none; margin-top:10px; text-align:center;"></div>
     </div>
   </div>
 
@@ -124,6 +125,7 @@
 
     function startPolling(student_id) {
       const scanStatus = document.getElementById("scanStatus");
+      const successMsg = document.getElementById("successMsg");
       const spinner = document.getElementById("loadingSpinner");
       const successIcon = document.getElementById("successIcon");
       const modalTitle = document.getElementById("modalTitle");
@@ -159,6 +161,14 @@
             scanStatus.textContent = "✅ 讀取成功！請使用此進行“第二次刷卡”確認...";
             scanStatus.style.color = "#2563eb";
             scanStatus.style.fontWeight = "bold";
+          } else if (data.status === "step_2" || data.currentStep === 2) {
+            // 顯示後端提供的訊息（若有）並提示使用者去學校信箱點註冊連結
+            successMsg.innerHTML = `\
+              <strong style="color:green;">${data.message || ''}</strong><br>\
+              ${data.hint || ''}<br><br>\
+              請準備好後打開學校信箱，點擊「註冊連結」啟動讀卡機註冊模式。\
+            `;
+            successMsg.style.display = "block";
           }
 
           if (attempts >= maxAttempts) {
