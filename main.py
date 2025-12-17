@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 import os
 from dotenv import load_dotenv # 記得安裝 python-dotenv
 import requests
+import threading
 from datetime import datetime, timedelta
 
 # 載入 .env 檔案
@@ -85,6 +86,19 @@ def send_telegram(text: str):
             print(f"[tg] send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         print(f"[tg] exception: {e}")
+
+
+def notify_pi_register_bg(student_id: str):
+    """Background notify Pi (via PI_API_URL) to enter register mode."""
+    if not PI_API_URL:
+        print("[notify_pi] PI_API_URL not set, skipping notify")
+        return
+    try:
+        url = f"{PI_API_URL.rstrip('/')}/mode/register"
+        resp = requests.post(url, json={"student_id": student_id}, timeout=5)
+        print(f"[notify_pi] POST {url} -> {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"[notify_pi] failed: {e}")
 
 
 # --- API for Pi (scan/register interactions) ---
@@ -239,14 +253,9 @@ async def register_post(
                  send_telegram(f"新用戶註冊（待綁定）：{name} ({student_id})")
              except Exception:
                  pass
-             # 通知 Pi 進入註冊模式（若 PI_API_URL 已設定）
+             # 非同步通知 Pi 進入註冊模式（若 PI_API_URL 已設定）
              if PI_API_URL:
-                 try:
-                    resp = requests.post(f"{PI_API_URL.rstrip('/')}/mode/register", json={"student_id": student_id}, timeout=5)
-                    print(f"[notify_pi] POST {PI_API_URL.rstrip('/')}/mode/register -> {resp.status_code} {resp.text}")
-                    # 如果需要，可在此檢查 resp.status_code != 200
-                 except Exception as e:
-                    print(f"Notify Pi register start failed: {e}")
+                 threading.Thread(target=notify_pi_register_bg, args=(student_id,), daemon=True).start()
              return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
 
     try:
@@ -258,13 +267,9 @@ async def register_post(
             send_telegram(f"新用戶註冊（待綁定）：{name} ({student_id})")
         except Exception:
             pass
-        # 通知 Pi 進入註冊模式（若 PI_API_URL 已設定）
+        # 非同步通知 Pi 進入註冊模式（若 PI_API_URL 已設定）
         if PI_API_URL:
-            try:
-                resp = requests.post(f"{PI_API_URL.rstrip('/')}/mode/register", json={"student_id": student_id}, timeout=5)
-                print(f"[notify_pi] POST {PI_API_URL.rstrip('/')}/mode/register -> {resp.status_code} {resp.text}")
-            except Exception as e:
-                print(f"Notify Pi register start failed: {e}")
+            threading.Thread(target=notify_pi_register_bg, args=(student_id,), daemon=True).start()
         return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
     except IntegrityError:
         db.rollback()
