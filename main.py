@@ -32,7 +32,10 @@ INIT_SQL_PATH = BASE_DIR / "sql" / "init_db.sql"
 
 PI_API_URL = os.getenv("PI_API_URL")
 PI_API_KEY = os.getenv("PI_API_KEY")
+TG_TOKEN = os.getenv("TG_TOKEN")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
+print("[startup] USING SQLITE + init_db.sql (no users.rfid_uid)")
 print(f"[startup] PI_API_URL={PI_API_URL}")
 print(f"[startup] DB_PATH={DB_PATH}")
 
@@ -94,9 +97,7 @@ class AccessLog(Base):
 
 class RegistrationSession(Base):
     __tablename__ = "registration_sessions"
-    student_id = Column(
-        String(20), ForeignKey("users.student_id"), primary_key=True
-    )
+    student_id = Column(String(20), ForeignKey("users.student_id"), primary_key=True)
     first_uid = Column(String(50), nullable=True)
     step = Column(Integer, default=0)
     expires_at = Column(TIMESTAMP, nullable=True)
@@ -114,11 +115,7 @@ def get_db():
     finally:
         db.close()
 
-
 # ----------------- Telegram helper -----------------
-
-TG_TOKEN = os.getenv("TG_TOKEN")
-TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 
 def send_telegram(text: str):
@@ -146,7 +143,6 @@ def notify_pi_register_bg(student_id: str):
     except Exception as e:
         print(f"[notify_pi] failed: {e}")
 
-
 # ----------------- FastAPI 基本設定 -----------------
 
 app = FastAPI()
@@ -164,13 +160,10 @@ async def api_scan(request: Request, db: Session = Depends(get_db)):
     if not rfid_uid:
         return JSONResponse({"error": "missing rfid_uid"}, status_code=400)
 
-    # 在 user_cards 找卡 → join user
     card = db.query(UserCard).filter(UserCard.rfid_uid == rfid_uid).first()
     if card:
         user = db.query(User).filter(User.student_id == card.student_id).first()
-        log = AccessLog(
-            student_id=card.student_id, rfid_uid=rfid_uid, action="entry"
-        )
+        log = AccessLog(student_id=card.student_id, rfid_uid=rfid_uid, action="entry")
         db.add(log)
         db.commit()
         try:
@@ -234,7 +227,6 @@ async def api_register_scan(request: Request, db: Session = Depends(get_db)):
     if not session:
         return JSONResponse({"error": "no_active_session"}, status_code=400)
 
-    # 檢查逾時
     if session.expires_at and session.expires_at < datetime.utcnow():
         db.delete(session)
         db.commit()
@@ -242,7 +234,6 @@ async def api_register_scan(request: Request, db: Session = Depends(get_db)):
 
     # step 0 => 接受第一刷
     if session.step == 0:
-        # 檢查此 UID 是否已被其他人綁定
         other = db.query(UserCard).filter(UserCard.rfid_uid == rfid_uid).first()
         if other:
             return JSONResponse(
@@ -254,9 +245,7 @@ async def api_register_scan(request: Request, db: Session = Depends(get_db)):
         session.step = 1
         session.expires_at = datetime.utcnow() + timedelta(seconds=60)
         db.commit()
-        log = AccessLog(
-            student_id=student_id, rfid_uid=rfid_uid, action="SCAN_1"
-        )
+        log = AccessLog(student_id=student_id, rfid_uid=rfid_uid, action="SCAN_1")
         db.add(log)
         db.commit()
         return {"status": "first_scan_ok"}
@@ -264,13 +253,9 @@ async def api_register_scan(request: Request, db: Session = Depends(get_db)):
     # step 1 => 驗證第二刷
     if session.step == 1:
         if session.first_uid == rfid_uid:
-            user = (
-                db.query(User).filter(User.student_id == student_id).first()
-            )
+            user = db.query(User).filter(User.student_id == student_id).first()
             if not user:
-                return JSONResponse(
-                    {"error": "user_not_found"}, status_code=404
-                )
+                return JSONResponse({"error": "user_not_found"}, status_code=404)
 
             other = db.query(UserCard).filter(
                 UserCard.rfid_uid == rfid_uid,
@@ -287,10 +272,7 @@ async def api_register_scan(request: Request, db: Session = Depends(get_db)):
                     status_code=400,
                 )
 
-            # 寫入 user_cards 一筆綁定
-            new_card = UserCard(
-                student_id=student_id, rfid_uid=rfid_uid
-            )
+            new_card = UserCard(student_id=student_id, rfid_uid=rfid_uid)
             db.add(new_card)
             db.add(
                 AccessLog(
@@ -316,7 +298,6 @@ async def api_register_scan(request: Request, db: Session = Depends(get_db)):
             return JSONResponse(
                 {"error": "mismatch_first_second"}, status_code=400
             )
-
 
 # ----------------- Web Routes -----------------
 
@@ -344,11 +325,8 @@ async def register_post(
     student_id = student_id.strip()
     name = name.strip()
 
-    existing_user = (
-        db.query(User).filter(User.student_id == student_id).first()
-    )
+    existing_user = db.query(User).filter(User.student_id == student_id).first()
     if existing_user:
-        # 判斷是否已經有任何卡片
         has_card = (
             db.query(UserCard)
             .filter(UserCard.student_id == student_id)
@@ -367,9 +345,7 @@ async def register_post(
             existing_user.name = name
             db.commit()
             try:
-                send_telegram(
-                    f"新用戶註冊（待綁定）：{name} ({student_id})"
-                )
+                send_telegram(f"新用戶註冊（待綁定）：{name} ({student_id})")
             except Exception:
                 pass
             if PI_API_URL:
@@ -378,18 +354,14 @@ async def register_post(
                     args=(student_id,),
                     daemon=True,
                 ).start()
-            return JSONResponse(
-                {"status": "ready_to_scan", "student_id": student_id}
-            )
+            return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
 
     try:
         user = User(student_id=student_id, name=name)
         db.add(user)
         db.commit()
         try:
-            send_telegram(
-                f"新用戶註冊（待綁定）：{name} ({student_id})"
-            )
+            send_telegram(f"新用戶註冊（待綁定）：{name} ({student_id})")
         except Exception:
             pass
         if PI_API_URL:
@@ -398,9 +370,7 @@ async def register_post(
                 args=(student_id,),
                 daemon=True,
             ).start()
-        return JSONResponse(
-            {"status": "ready_to_scan", "student_id": student_id}
-        )
+        return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=400, detail="註冊失敗")
@@ -436,7 +406,6 @@ async def success_page(
     )
 
 
-# 測試 /rfid_scan：直接綁定或進出記錄
 @app.post("/rfid_scan")
 async def rfid_scan(
     student_id: str = Form(...),
@@ -448,14 +417,9 @@ async def rfid_scan(
     if not user:
         raise HTTPException(status_code=404, detail="用戶不存在")
 
-    card = (
-        db.query(UserCard)
-        .filter(UserCard.rfid_uid == rfid_uid)
-        .first()
-    )
+    card = db.query(UserCard).filter(UserCard.rfid_uid == rfid_uid).first()
 
     if not card:
-        # 尚未綁定 → 這次視為綁定
         new_card = UserCard(student_id=student_id, rfid_uid=rfid_uid)
         db.add(new_card)
         db.commit()
@@ -465,9 +429,7 @@ async def rfid_scan(
             )
         )
         db.commit()
-        return JSONResponse(
-            {"status": "success", "message": "綁定成功"}
-        )
+        return JSONResponse({"status": "success", "message": "綁定成功"})
 
     if card.student_id != student_id:
         raise HTTPException(
