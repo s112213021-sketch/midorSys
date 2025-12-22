@@ -1,112 +1,94 @@
+#!/usr/bin/env python3
 from fastapi import FastAPI, Request, Form, HTTPException, Depends
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import (
-    create_engine,
-    Column,
-    String,
-    TIMESTAMP,
-    func,
-    Integer,
-    ForeignKey,
-)
+from sqlalchemy import create_engine, Column, String, TIMESTAMP, func, Integer, ForeignKey, and_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError
-from dotenv import load_dotenv
-from pathlib import Path
 import os
-import sqlite3
+from dotenv import load_dotenv
 import requests
 import threading
 from datetime import datetime, timedelta
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import secrets
+import sys
+import logging
+import asyncio
 
-# ----------------- 基本設定 -----------------
+# RFID 讀取相關 (可選)
+try:
+    from evdev import InputDevice, ecodes, list_devices
+    EVDEV_AVAILABLE = True
+except ImportError:
+    EVDEV_AVAILABLE = False
+    print("[警告] evdev 未安裝,RFID 讀取功能不可用。安裝方式: pip install evdev")
 
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "moli_door.db"          # 真正使用的 SQLite 檔案
-INIT_SQL_PATH = BASE_DIR / "sql" / "init_db.sql"
-
+DATABASE_URL = os.getenv("DATABASE_URL")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 PI_API_URL = os.getenv("PI_API_URL")
 PI_API_KEY = os.getenv("PI_API_KEY")
-TG_TOKEN = os.getenv("TG_TOKEN")
-TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
-print("[startup] USING SQLITE + init_db.sql (no users.rfid_uid)")
-print(f"[startup] PI_API_URL={PI_API_URL}")
-print(f"[startup] DB_PATH={DB_PATH}")
+# SMTP 郵件設定
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 
-# ----------------- 用 init_db.sql 建立 / 更新 SQLite -----------------
+# RFID 裝置設定
+RFID_DEVICE_PATH = os.getenv("RFID_DEVICE_PATH", "/dev/input/event0")  # 根據實際裝置調整
+RFID_ENABLED = os.getenv("RFID_ENABLED", "false").lower() == "true"
 
+app = FastAPI()
 
-def init_sqlite_db():
-    # 若 DB 檔不存在，或你想確保 schema 一致，就執行 init_db.sql
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        with open(INIT_SQL_PATH, "r", encoding="utf-8") as f:
-            sql_script = f.read()
-        conn.executescript(sql_script)
-        conn.commit()
-        print("[db] init_db.sql executed OK")
-    finally:
-        conn.close()
-
-
-init_sqlite_db()
-
-DATABASE_URL = f"sqlite:///{DB_PATH}"
-
-# ----------------- SQLAlchemy 設定 -----------------
-
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False},  # SQLite 多執行緒需要
+# Logging 設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
+logger = logging.getLogger(__name__)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# ----------------- ORM Models：對應 init_db.sql -----------------
-
-
 class User(Base):
     __tablename__ = "users"
-    student_id = Column(String(20), primary_key=True, index=True)
+    student_id = Column(String(20), primary_key=True)
     name = Column(String(50), nullable=False)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-
-
-class UserCard(Base):
-    __tablename__ = "user_cards"
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    student_id = Column(String(20), ForeignKey("users.student_id"), nullable=False)
-    rfid_uid = Column(String(50), unique=True, nullable=False)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-
+    rfid_uid = Column(String(50), unique=True, nullable=True)
+    email_verified = Column(Integer, default=0)
+    verification_token = Column(String(100), nullable=True)
+    token_expires_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 class AccessLog(Base):
     __tablename__ = "access_logs"
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    student_id = Column(String(20), ForeignKey("users.student_id"), nullable=False)
-    rfid_uid = Column(String(50), nullable=False)
-    action = Column(String(10), nullable=False)
-    timestamp = Column(TIMESTAMP, server_default=func.now())
-
+    id = Column(Integer, primary_key=True)
+    student_id = Column(String(20), ForeignKey("users.student_id"))
+    rfid_uid = Column(String(50))
+    action = Column(String(10))
+    timestamp = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 class RegistrationSession(Base):
     __tablename__ = "registration_sessions"
     student_id = Column(String(20), ForeignKey("users.student_id"), primary_key=True)
     first_uid = Column(String(50), nullable=True)
     step = Column(Integer, default=0)
-    expires_at = Column(TIMESTAMP, nullable=True)
-    created_at = Column(TIMESTAMP, server_default=func.now())
+    expires_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
-
-# 注意：schema 已由 init_db.sql 建立，這裡不再 create_all
-# Base.metadata.create_all(bind=engine)
-
+Base.metadata.create_all(bind=engine)
 
 def get_db():
     db = SessionLocal()
@@ -115,44 +97,81 @@ def get_db():
     finally:
         db.close()
 
-# ----------------- Telegram helper -----------------
-
-
 def send_telegram(text: str):
-    if not TG_TOKEN or not TG_CHAT_ID:
-        print("[tg] TG_TOKEN or TG_CHAT_ID not set, skipping message")
+    if not BOT_TOKEN or not TG_CHAT_ID:
         return
     try:
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        resp = requests.post(url, json={"chat_id": TG_CHAT_ID, "text": text})
-        if resp.status_code != 200:
-            print(f"[tg] send failed: {resp.status_code} {resp.text}")
-    except Exception as e:
-        print(f"[tg] exception: {e}")
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": TG_CHAT_ID, "text": text}, timeout=5)
+    except:
+        pass
 
+def send_verification_email(student_id: str, name: str, token: str):
+    """發送驗證信到學校信箱"""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        print("[郵件] SMTP 未設定，跳過發送")
+        return False
+    
+    try:
+        email = f"s{student_id}@ncnu.edu.tw"
+        verify_url = f"{SERVER_URL}/verify?token={token}"
+        
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = 'MOLI 門禁系統 - 信箱驗證'
+        msg['From'] = SMTP_USER        # 1. 安裝相依 (Linux/Raspberry Pi)
+    
+        html = f"""
+        <html>
+            <body style="font-family: sans-serif; padding: 20px;">
+            <h2 style="color: #2563eb;">MOLI 門禁系統註冊驗證</h2>
+            <p>親愛的 <strong>{name}</strong> 同學，您好：</p>
+            <p>感謝您註冊 MOLI 實驗室門禁系統，請點擊下方連結完成信箱驗證：</p>
+            <p style="margin: 24px 0;">
+                <a href="{verify_url}" 
+                    style="background: #2563eb; color: white; padding: 12px 24px; 
+                        text-decoration: none; border-radius: 6px; display: inline-block;">
+                驗證我的信箱
+                </a>
+            </p>
+            <p style="color: #6b7280; font-size: 14px;">
+                或複製此連結到瀏覽器：<br>
+                <a href="{verify_url}">{verify_url}</a>
+            </p>
+            <p style="color: #6b7280; font-size: 13px; margin-top: 32px;">
+                此驗證連結僅可使用一次，點擊後將自動失效。<br>
+                © MOLI – Makers' Open Lab for Innovation
+                </p>
+            </body>
+        </html>
+        """
+        
+        part = MIMEText(html, 'html')
+        msg.attach(part)
+        
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+        
+        print(f"[郵件] 已發送驗證信至 {email}")
+        return True
+    except Exception as e:
+        print(f"[郵件] 發送失敗: {e}")
+        return False
 
 def notify_pi_register_bg(student_id: str):
-    """Background notify Pi (via PI_API_URL) to enter register mode."""
     if not PI_API_URL:
-        print("[notify_pi] PI_API_URL not set, skipping notify")
         return
     try:
-        url = f"{PI_API_URL.rstrip('/')}/mode/register"
-        resp = requests.post(url, json={"student_id": student_id}, timeout=5)
-        print(f"[notify_pi] POST {url} -> {resp.status_code} {resp.text}")
+        headers = {"Content-Type": "application/json"}
+        if PI_API_KEY:
+            headers["X-API-KEY"] = PI_API_KEY
+        requests.post(f"{PI_API_URL.rstrip('/')}/mode/register",
+    xjson={"student_id": student_id}, headers=headers, timeout=5)
     except Exception as e:
-        print(f"[notify_pi] failed: {e}")
+        print(f"[notify_pi] error: {e}")
 
-# ----------------- FastAPI 基本設定 -----------------
-
-app = FastAPI()
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-# ----------------- API for Pi -----------------
-
-
+# === Pi 呼叫的 API（保持不變）===
 @app.post("/api/scan")
 async def api_scan(request: Request, db: Session = Depends(get_db)):
     data = await request.json()
@@ -160,24 +179,13 @@ async def api_scan(request: Request, db: Session = Depends(get_db)):
     if not rfid_uid:
         return JSONResponse({"error": "missing rfid_uid"}, status_code=400)
 
-    card = db.query(UserCard).filter(UserCard.rfid_uid == rfid_uid).first()
-    if card:
-        user = db.query(User).filter(User.student_id == card.student_id).first()
-        log = AccessLog(student_id=card.student_id, rfid_uid=rfid_uid, action="entry")
-        db.add(log)
+    user = db.query(User).filter(User.rfid_uid == rfid_uid).first()
+    if user:
+        db.add(AccessLog(student_id=user.student_id, rfid_uid=rfid_uid, action="entry"))
         db.commit()
-        try:
-            send_telegram(f"你好！{user.name} 已進入 moli ({user.student_id})")
-        except Exception:
-            pass
-        return {
-            "status": "allow",
-            "student_id": user.student_id,
-            "name": user.name,
-        }
-
+        send_telegram(f"歡迎！{user.name} ({user.student_id}) 已進入實驗室")
+        return {"status": "allow", "student_id": user.student_id, "name": user.name}
     return {"status": "deny"}
-
 
 @app.post("/api/register/start")
 async def api_register_start(request: Request, db: Session = Depends(get_db)):
@@ -185,29 +193,21 @@ async def api_register_start(request: Request, db: Session = Depends(get_db)):
     student_id = data.get("student_id")
     if not student_id:
         return JSONResponse({"error": "missing student_id"}, status_code=400)
-
     user = db.query(User).filter(User.student_id == student_id).first()
     if not user:
         return JSONResponse({"error": "user_not_found"}, status_code=404)
 
-    expires = datetime.utcnow() + timedelta(seconds=60)
-    session = (
-        db.query(RegistrationSession)
-        .filter(RegistrationSession.student_id == student_id)
-        .first()
-    )
+    expires = datetime.utcnow() + timedelta(seconds=90)
+    session = db.query(RegistrationSession).filter(RegistrationSession.student_id == student_id).first()
     if session:
         session.first_uid = None
         session.step = 0
         session.expires_at = expires
     else:
-        session = RegistrationSession(
-            student_id=student_id, first_uid=None, step=0, expires_at=expires
-        )
+        session = RegistrationSession(student_id=student_id, expires_at=expires)
         db.add(session)
     db.commit()
-    return {"status": "ok", "expires_at": expires.isoformat()}
-
+    return {"status": "ok"}
 
 @app.post("/api/register/scan")
 async def api_register_scan(request: Request, db: Session = Depends(get_db)):
@@ -215,238 +215,345 @@ async def api_register_scan(request: Request, db: Session = Depends(get_db)):
     student_id = data.get("student_id")
     rfid_uid = data.get("rfid_uid")
     if not student_id or not rfid_uid:
-        return JSONResponse(
-            {"error": "missing student_id_or_rfid_uid"}, status_code=400
-        )
+        return JSONResponse({"error": "missing data"}, status_code=400)
 
-    session = (
-        db.query(RegistrationSession)
-        .filter(RegistrationSession.student_id == student_id)
-        .first()
-    )
-    if not session:
-        return JSONResponse({"error": "no_active_session"}, status_code=400)
+    session = db.query(RegistrationSession).filter(RegistrationSession.student_id == student_id).first()
+    if not session or (session.expires_at and session.expires_at < datetime.utcnow()):
+        return JSONResponse({"error": "no session or expired"}, status_code=400)
 
-    if session.expires_at and session.expires_at < datetime.utcnow():
-        db.delete(session)
-        db.commit()
-        return JSONResponse({"error": "session_expired"}, status_code=400)
-
-    # step 0 => 接受第一刷
+    # 第一次刷卡 (step 0)
     if session.step == 0:
-        other = db.query(UserCard).filter(UserCard.rfid_uid == rfid_uid).first()
-        if other:
-            return JSONResponse(
-                {"error": "uid_already_bound", "bound_to": other.student_id},
-                status_code=400,
-            )
-
+        # 檢查此 UID 是否已被其他人綁定
+        if db.query(User).filter(and_(User.rfid_uid == rfid_uid, User.student_id != student_id)).first():
+            return JSONResponse({"error": "uid_already_bound"}, status_code=400)
+        
         session.first_uid = rfid_uid
         session.step = 1
-        session.expires_at = datetime.utcnow() + timedelta(seconds=60)
+        session.expires_at = datetime.utcnow() + timedelta(seconds=90)
         db.commit()
-        log = AccessLog(student_id=student_id, rfid_uid=rfid_uid, action="SCAN_1")
-        db.add(log)
+        
+        # 記錄第一次刷卡
+        db.add(AccessLog(student_id=student_id, rfid_uid=rfid_uid, action="SCAN_1"))
         db.commit()
-        return {"status": "first_scan_ok"}
+        
+        return {"status": "first_scan_ok", "message": "第一次刷卡成功，請再刷一次相同的卡"}
 
-    # step 1 => 驗證第二刷
+    # 第二次刷卡 (step 1)
     if session.step == 1:
         if session.first_uid == rfid_uid:
+            # 兩次刷卡一致，進行綁定
             user = db.query(User).filter(User.student_id == student_id).first()
             if not user:
                 return JSONResponse({"error": "user_not_found"}, status_code=404)
-
-            other = db.query(UserCard).filter(
-                UserCard.rfid_uid == rfid_uid,
-                UserCard.student_id != student_id,
-            ).first()
+            
+            # 再次檢查是否有人已綁定此卡
+            other = db.query(User).filter(and_(User.rfid_uid == rfid_uid, User.student_id != student_id)).first()
             if other:
                 db.delete(session)
                 db.commit()
-                return JSONResponse(
-                    {
-                        "error": "uid_already_bound_after_check",
-                        "bound_to": other.student_id,
-                    },
-                    status_code=400,
-                )
-
-            new_card = UserCard(student_id=student_id, rfid_uid=rfid_uid)
-            db.add(new_card)
-            db.add(
-                AccessLog(
-                    student_id=student_id,
-                    rfid_uid=rfid_uid,
-                    action="bind",
-                )
-            )
+                return JSONResponse({"error": "uid_already_bound_by_other"}, status_code=400)
+            
+            # 綁定卡號到用戶
+            user.rfid_uid = rfid_uid
+            db.add(AccessLog(student_id=student_id, rfid_uid=rfid_uid, action="bind"))
             db.delete(session)
-            db.commit()
-            try:
-                send_telegram(
-                    f"綁定成功：{user.name} ({user.student_id}) 綁定卡號 {rfid_uid}"
-                )
-            except Exception:
-                pass
-            return {"status": "bound"}
+            db.commit() 
+            
+            send_telegram(f"綁定成功：{user.name} ({student_id}) 已綁定卡號")
+            return {"status": "bound", "message": "綁定成功"}
         else:
+            # 兩次刷卡不一致，重置回 step 0
             session.first_uid = None
             session.step = 0
-            session.expires_at = datetime.utcnow() + timedelta(seconds=60)
+            session.expires_at = datetime.utcnow() + timedelta(seconds=90)
             db.commit()
-            return JSONResponse(
-                {"error": "mismatch_first_second"}, status_code=400
-            )
+            return JSONResponse({"error": "mismatch", "message": "兩次刷卡不一致，請重新開始"}, status_code=400)
 
-# ----------------- Web Routes -----------------
-
-
+# === 前端網頁（保持不變）===
 @app.get("/", response_class=HTMLResponse)
-async def register_form(request: Request):
-    return templates.TemplateResponse(
-        "register.html",
-        {
-            "request": request,
-            "error": None,
-            "pi_api_url": PI_API_URL or "",
-            "api_key": PI_API_KEY or "",
-        },
-    )
-
+async def home(request: Request):
+    return templates.TemplateResponse("register.html", {"request": request})
 
 @app.post("/register")
-async def register_post(
-    request: Request,
-    student_id: str = Form(...),
-    name: str = Form(...),
-    db: Session = Depends(get_db),
-):
+async def register_post(request: Request, student_id: str = Form(...), name: str = Form(...), db: Session = Depends(get_db)):
     student_id = student_id.strip()
     name = name.strip()
 
-    existing_user = db.query(User).filter(User.student_id == student_id).first()
-    if existing_user:
-        has_card = (
-            db.query(UserCard)
-            .filter(UserCard.student_id == student_id)
-            .first()
-            is not None
+    existing = db.query(User).filter(User.student_id == student_id).first()
+    if existing and existing.email_verified and existing.rfid_uid:
+        return JSONResponse({"error": "此學號已完成註冊，請直接刷卡進門"}, status_code=400)
+
+    # 產生驗證令牌 (一次性,不設過期時間)
+    token = secrets.token_urlsafe(32)
+    
+    if existing:
+        existing.name = name
+        existing.verification_token = token
+        existing.token_expires_at = None  # 不設過期時間
+        existing.email_verified = 0
+    else:
+        existing = User(
+            student_id=student_id, 
+            name=name,
+            verification_token=token,
+            token_expires_at=None,  # 不設過期時間
+            email_verified=0
         )
-        if has_card:
-            return templates.TemplateResponse(
-                "register.html",
-                {
-                    "request": request,
-                    "error": "❌ 學號已註冊且已綁定卡片，請直接使用。",
-                },
-            )
-        else:
-            existing_user.name = name
-            db.commit()
-            try:
-                send_telegram(f"新用戶註冊（待綁定）：{name} ({student_id})")
-            except Exception:
-                pass
-            if PI_API_URL:
-                threading.Thread(
-                    target=notify_pi_register_bg,
-                    args=(student_id,),
-                    daemon=True,
-                ).start()
-            return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
+        db.add(existing)
+    db.commit()
 
-    try:
-        user = User(student_id=student_id, name=name)
-        db.add(user)
-        db.commit()
-        try:
-            send_telegram(f"新用戶註冊（待綁定）：{name} ({student_id})")
-        except Exception:
-            pass
-        if PI_API_URL:
-            threading.Thread(
-                target=notify_pi_register_bg,
-                args=(student_id,),
-                daemon=True,
-            ).start()
-        return JSONResponse({"status": "ready_to_scan", "student_id": student_id})
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="註冊失敗")
+    # 發送驗證信
+    if not SMTP_USER or not SMTP_PASSWORD:
+        # SMTP 未設定，直接導到驗證頁面並顯示手動驗證連結
+        print(f"[開發模式] 驗證連結: {SERVER_URL}/verify?token={token}")
+        send_telegram(f"新註冊待驗證：{name} ({student_id})")
+        # 開發模式：自動生成驗證連結並顯示
+        return templates.TemplateResponse("verify.html", {
+            "request": request, 
+            "dev_mode": True,
+            "verify_link": f"{SERVER_URL}/verify?token={token}",
+            "student_id": student_id
+        })
+    
+    email_sent = send_verification_email(student_id, name, token)
+    
+    if email_sent:
+        send_telegram(f"新註冊待驗證：{name} ({student_id})")
+        return RedirectResponse(url="/verify", status_code=303)
+    else:
+        return JSONResponse({"error": "郵件發送失敗，請稍後再試"}, status_code=500)
 
+@app.get("/verify")
+async def verify_page(request: Request, token: str = None, db: Session = Depends(get_db)):
+    """顯示驗證提示頁面或處理驗證"""
+    if not token:
+        # 沒有 token，顯示提示頁面
+        return templates.TemplateResponse("verify.html", {"request": request})
+    
+    # 有 token，處理驗證
+    user = db.query(User).filter(User.verification_token == token).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="驗證連結無效或已使用")
+    
+    # 移除過期檢查,改為檢查是否已經驗證過
+    if user.email_verified == 1:
+        raise HTTPException(status_code=400, detail="此連結已使用過,請勿重複驗證")
+    
+    # 標記為已驗證並清除 token (使連結失效)
+    user.email_verified = 1
+    user.verification_token = None
+    user.token_expires_at = None
+    db.commit()
+    
+    send_telegram(f"信箱驗證成功：{user.name} ({user.student_id})")
+    
+    # 重導到刷卡綁定流程
+    threading.Thread(target=notify_pi_register_bg, args=(user.student_id,)).start()
+    
+    return RedirectResponse(url=f"/bind?student_id={user.student_id}", status_code=303)
+
+@app.get("/bind")
+async def bind_page(request: Request, student_id: str, db: Session = Depends(get_db)):
+    """刷卡綁定頁面"""
+    user = db.query(User).filter(User.student_id == student_id).first()
+    if not user or not user.email_verified:
+        raise HTTPException(status_code=403, detail="請先完成信箱驗證")
+    
+    # 建立註冊 session
+    expires = datetime.utcnow() + timedelta(seconds=90)
+    session = db.query(RegistrationSession).filter(RegistrationSession.student_id == student_id).first()
+    if session:
+        session.first_uid = None
+        session.step = 0
+        session.expires_at = expires
+    else:
+        session = RegistrationSession(student_id=student_id, expires_at=expires)
+        db.add(session)
+    db.commit()
+    
+    # 進入註冊模式(讓 RFID 讀取器知道)
+    global current_registering_student_id
+    with registration_mode_lock:
+        current_registering_student_id = student_id
+    logger.info(f"[註冊模式] 啟動 - 目標學號: {student_id}")
+    
+    return templates.TemplateResponse("bind.html", {"request": request, "user": user})
 
 @app.get("/check_status/{student_id}")
 async def check_status(student_id: str, db: Session = Depends(get_db)):
-    has_card = (
-        db.query(UserCard)
-        .filter(UserCard.student_id == student_id)
-        .first()
-        is not None
-    )
-    if has_card:
-        card = (
-            db.query(UserCard)
-            .filter(UserCard.student_id == student_id)
-            .first()
-        )
-        return {"bound": True, "rfid_uid": card.rfid_uid}
-    return {"bound": False}
+    user = db.query(User).filter(User.student_id == student_id).first()
+    
+    # 檢查是否有進行中的 registration session
+    session = db.query(RegistrationSession).filter(
+        RegistrationSession.student_id == student_id,
+        RegistrationSession.expires_at > datetime.now()
+    ).first()
+    
+    session_info = None
+    if session:
+        session_info = {
+            "step": session.step,
+            "expires_at": session.expires_at.isoformat(),
+            "first_rfid_uid": session.first_rfid_uid
+        }
+    
+    return {
+        "bound": bool(user and user.rfid_uid),
+        "session": session_info
+    }
 
-
-@app.get("/success", response_class=HTMLResponse)
-async def success_page(
-    request: Request, student_id: str, db: Session = Depends(get_db)
-):
+@app.get("/success")
+async def success(request: Request, student_id: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.student_id == student_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="用戶不存在")
-    return templates.TemplateResponse(
-        "success.html", {"request": request, "user": user}
-    )
+        raise HTTPException(404)
+    return templates.TemplateResponse("success.html", {"request": request, "user": user})
 
+# Pi 接收註冊模式通知
+@app.post("/mode/register")
+def enter_register_mode(data: dict):
+    student_id = data.get("student_id")
+    global current_registering_student_id
+    with registration_mode_lock:
+        current_registering_student_id = student_id
+    logger.info(f"[註冊模式] 啟動 - 目標學號: {student_id}")
+    return {"status": "ok"}
 
-@app.post("/rfid_scan")
-async def rfid_scan(
-    student_id: str = Form(...),
-    rfid_uid: str = Form(...),
-    action: str = Form(default="entry"),
-    db: Session = Depends(get_db),
-):
-    user = db.query(User).filter(User.student_id == student_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用戶不存在")
+# ================= RFID 讀取功能 =================
+SCANCODE_MAP = {2: '1', 3: '2', 4: '3', 5: '4', 6: '5',
+                7: '6', 8: '7', 9: '8', 10: '9', 11: '0'}
 
-    card = db.query(UserCard).filter(UserCard.rfid_uid == rfid_uid).first()
+# 全域變數:目前註冊中的學號
+current_registering_student_id = None
+registration_mode_lock = threading.Lock()
 
-    if not card:
-        new_card = UserCard(student_id=student_id, rfid_uid=rfid_uid)
-        db.add(new_card)
-        db.commit()
-        db.add(
-            AccessLog(
-                student_id=student_id, rfid_uid=rfid_uid, action="bind"
-            )
-        )
-        db.commit()
-        return JSONResponse({"status": "success", "message": "綁定成功"})
+def find_rfid_device():
+    """自動偵測 RFID 裝置"""
+    if not EVDEV_AVAILABLE:
+        return None
+    try:
+        devs = list_devices()
+        for d in devs:
+            try:
+                dev = InputDevice(d)
+                name = dev.name.lower()
+                if any(k in name for k in ('rfid', 'scanner', 'keyboard', 'hid')):
+                    logger.info(f"[RFID] 找到候選裝置: {dev.name} ({d})")
+                    return d
+            except Exception:
+                continue
+        if devs:
+            logger.info(f"[RFID] 使用第一個輸入裝置: {devs[0]}")
+            return devs[0]
+    except Exception as e:
+        logger.warning(f"[RFID] 偵測裝置失敗: {e}")
+    return None
 
-    if card.student_id != student_id:
-        raise HTTPException(
-            status_code=400, detail="RFID 與註冊資料不符"
-        )
+async def process_rfid_scan(card_uid: str):
+    """處理刷卡事件 (統一接口)"""
+    logger.info(f"[RFID] 偵測到卡號: {card_uid}")
+    
+    with registration_mode_lock:
+        target_student_id = current_registering_student_id
+    
+    if target_student_id:
+        # 註冊模式:呼叫註冊 API
+        logger.info(f"[RFID] 註冊模式 - 學號 {target_student_id} 刷卡 {card_uid}")
+        try:
+            async with asyncio.timeout(5):
+                response = await asyncio.to_thread(
+                    requests.post,
+                    "http://localhost:8000/api/register/scan",
+                    json={"student_id": target_student_id, "rfid_uid": card_uid},
+                    timeout=5
+                )
+                data = response.json()
+                logger.info(f"[RFID] 註冊回應: {data}")
+                
+                if data.get("status") == "bound":
+                    # 綁定成功,退出註冊模式
+                    with registration_mode_lock:
+                        current_registering_student_id = None
+                    logger.info(f"[RFID] 綁定成功!退出註冊模式")
+        except Exception as e:
+            logger.error(f"[RFID] 註冊 API 呼叫失敗: {e}")
+    else:
+        # 正常模式:呼叫門禁驗證 API
+        logger.info(f"[RFID] 正常模式 - 驗證卡號 {card_uid}")
+        try:
+            async with asyncio.timeout(5):
+                response = await asyncio.to_thread(
+                    requests.post,
+                    "http://localhost:8000/api/scan",
+                    json={"rfid_uid": card_uid},
+                    timeout=5
+                )
+                data = response.json()
+                if data.get("status") == "allow":
+                    logger.info(f"[✅ 允許進入] {data.get('name')} ({data.get('student_id')})")
+                else:
+                    logger.info(f"[🔴 拒絕] 卡號未註冊")
+        except Exception as e:
+            logger.error(f"[RFID] 驗證 API 呼叫失敗: {e}")
 
-    log = AccessLog(
-        student_id=student_id, rfid_uid=rfid_uid, action=action
-    )
-    db.add(log)
-    db.commit()
-    return JSONResponse(
-        {"status": "success", "message": f"{action} 成功"}
-    )
+def rfid_reader_loop():
+    """RFID 讀取主迴圈 (背景執行緒)"""
+    if not EVDEV_AVAILABLE:
+        logger.warning("[RFID] evdev 不可用,無法啟動 RFID 讀取")
+        return
+    
+    logger.info(f"[RFID] 啟動讀卡機監聽...")
+    
+    device_path = RFID_DEVICE_PATH
+    device = None
+    
+    # 嘗試開啟裝置
+    try:
+        if os.path.exists(device_path):
+            device = InputDevice(device_path)
+            logger.info(f"[RFID] 使用裝置: {device.name} ({device_path})")
+        else:
+            # 自動偵測
+            auto_path = find_rfid_device()
+            if auto_path:
+                device = InputDevice(auto_path)
+                logger.info(f"[RFID] 自動偵測到裝置: {device.name} ({auto_path})")
+    except Exception as e:
+        logger.error(f"[RFID] 裝置開啟失敗: {e}")
+        logger.info("[RFID] 提示: 1) 確認裝置路徑 2) 使用 sudo 執行 3) 將使用者加入 input 群組")
+        return
+    
+    if not device:
+        logger.error("[RFID] 找不到可用的 RFID 裝置")
+        return
+    
+    current_code = ""
+    logger.info("[RFID] ✅ 讀卡機就緒,等待刷卡...")
+    
+    try:
+        for event in device.read_loop():
+            if event.type == ecodes.EV_KEY and event.value == 1:  # Key down
+                if event.code == 28:  # Enter 鍵
+                    if current_code:
+                        card_uid = current_code
+                        # 使用 asyncio 處理
+                        asyncio.run(process_rfid_scan(card_uid))
+                        current_code = ""
+                elif event.code in SCANCODE_MAP:
+                    current_code += SCANCODE_MAP[event.code]
+    except KeyboardInterrupt:
+        logger.info("[RFID] 讀卡機監聽已停止")
+    except Exception as e:
+        logger.error(f"[RFID] 讀取錯誤: {e}")
 
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+def start_rfid_reader():
+    """啟動 RFID 讀取背景執行緒"""
+    if RFID_ENABLED and EVDEV_AVAILABLE:
+        thread = threading.Thread(target=rfid_reader_loop, daemon=True)
+        thread.start()
+        logger.info("[RFID] 背景讀卡執行緒已啟動")
+    elif RFID_ENABLED and not EVDEV_AVAILABLE:
+        logger.warning("[RFID] RFID_ENABLED=true 但 evdev 未安裝,請執行: pip install evdev")
+    else:
+        logger.info("[RFID] RFID 讀取功能未啟用 (設定 RFID_ENABLED=true 啟用)")
